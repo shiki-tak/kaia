@@ -37,6 +37,8 @@ import (
 // type smartContractAccountSerializableExt:  RLP encoding spec. StorageRoot is ExtHash
 // type smartContractAccountSerializableJSON: JSON encoding spec. StorageRoot is Hash
 
+var emptyRoot = common.HexToHash("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+
 // SmartContractAccount represents a smart contract account containing
 // storage root and code hash.
 type SmartContractAccount struct {
@@ -79,7 +81,7 @@ type smartContractAccountSerializableJSON struct {
 func newSmartContractAccount() *SmartContractAccount {
 	return &SmartContractAccount{
 		newAccountCommon(),
-		common.ExtHash{},
+		emptyRoot.ExtendZero(),
 		emptyCodeHash,
 		params.CodeInfo(0),
 	}
