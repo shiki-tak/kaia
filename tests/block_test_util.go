@@ -53,41 +53,59 @@ func (t *BlockTest) UnmarshalJSON(in []byte) error {
 }
 
 type btJSON struct {
-	Blocks    []btBlock               `json:"blocks"`
-	Genesis   btHeader                `json:"genesisBlockHeader"`
-	Pre       blockchain.GenesisAlloc `json:"pre"`
-	Post      blockchain.GenesisAlloc `json:"postState"`
-	BestBlock common.UnprefixedHash   `json:"lastblockhash"`
-	Network   string                  `json:"networks"`
+	Blocks     []btBlock               `json:"blocks"`
+	Genesis    btHeader                `json:"genesisBlockHeader"`
+	Pre        blockchain.GenesisAlloc `json:"pre"`
+	Post       blockchain.GenesisAlloc `json:"postState"`
+	BestBlock  common.UnprefixedHash   `json:"lastblockhash"`
+	Network    string                  `json:"network"`
+	SealEngine string                  `json:"sealEngine"`
 }
 
 type btBlock struct {
-	BlockHeader *btHeader
-	Rlp         string
+	BlockHeader     *btHeader
+	ExpectException string
+	Rlp             string
+	UncleHeaders    []*btHeader
 }
 
 //go:generate gencodec -type btHeader -field-override btHeaderMarshaling -out gen_btheader.go
 
 type btHeader struct {
-	Bloom            types.Bloom
-	Number           *big.Int
-	Hash             common.Hash
-	ParentHash       common.Hash
-	ReceiptTrie      common.Hash
-	StateRoot        common.Hash
-	TransactionsTrie common.Hash
-	ExtraData        []byte
-	BlockScore       *big.Int
-	GasUsed          uint64
-	Timestamp        *big.Int
+	Bloom                 types.Bloom
+	Coinbase              common.Address
+	MixHash               common.Hash
+	Nonce                 uint64
+	Number                *big.Int
+	Hash                  common.Hash
+	ParentHash            common.Hash
+	ReceiptTrie           common.Hash
+	StateRoot             common.Hash
+	TransactionsTrie      common.Hash
+	UncleHash             common.Hash
+	ExtraData             []byte
+	Difficulty            *big.Int
+	GasLimit              uint64
+	GasUsed               uint64
+	Timestamp             uint64
+	BaseFeePerGas         *big.Int
+	WithdrawalsRoot       *common.Hash
+	BlobGasUsed           *uint64
+	ExcessBlobGas         *uint64
+	ParentBeaconBlockRoot *common.Hash
 }
 
 type btHeaderMarshaling struct {
-	ExtraData  hexutil.Bytes
-	Number     *math.HexOrDecimal256
-	BlockScore *math.HexOrDecimal256
-	GasUsed    math.HexOrDecimal64
-	Timestamp  *math.HexOrDecimal256
+	Nonce         math.HexOrDecimal64
+	ExtraData     hexutil.Bytes
+	Number        *math.HexOrDecimal256
+	Difficulty    *math.HexOrDecimal256
+	GasLimit      math.HexOrDecimal64
+	GasUsed       math.HexOrDecimal64
+	Timestamp     math.HexOrDecimal64
+	BaseFeePerGas *math.HexOrDecimal256
+	BlobGasUsed   *math.HexOrDecimal64
+	ExcessBlobGas *math.HexOrDecimal64
 }
 
 func (t *BlockTest) Run() error {
@@ -95,6 +113,7 @@ func (t *BlockTest) Run() error {
 	if !ok {
 		return UnsupportedForkError{t.json.Network}
 	}
+	blockchain.InitDeriveSha(config)
 
 	// import pre accounts & construct test genesis block & state root
 	db := database.NewMemoryDBManager()
@@ -102,10 +121,18 @@ func (t *BlockTest) Run() error {
 	if err != nil {
 		return err
 	}
-	if gblock.Hash() != t.json.Genesis.Hash {
-		return fmt.Errorf("genesis block hash doesn't match test: computed=%x, test=%x", gblock.Hash().Bytes()[:6], t.json.Genesis.Hash[:6])
+
+	// Our header fields are not compatible with Eth, so you can skip this.
+	// if gblock.Hash() != t.json.Genesis.Hash {
+	// 	return fmt.Errorf("genesis block hash doesn't match test: computed=%x, test=%x", gblock.Hash().Bytes()[:6], t.json.Genesis.Hash[:6])
+	// }
+
+	st := MakePreState(db, t.json.Pre, true, config.Rules(gblock.Number()))
+	simulatedRoot, err := useEthStateRoot(st)
+	if err != nil {
+		return err
 	}
-	if gblock.Root() != t.json.Genesis.StateRoot {
+	if simulatedRoot != t.json.Genesis.StateRoot {
 		return fmt.Errorf("genesis block state root does not match test: computed=%x, test=%x", gblock.Root().Bytes()[:6], t.json.Genesis.StateRoot[:6])
 	}
 
@@ -216,14 +243,11 @@ func validateHeader(h *btHeader, h2 *types.Header) error {
 	if !bytes.Equal(h.ExtraData, h2.Extra) {
 		return fmt.Errorf("Extra data: want: %x have: %x", h.ExtraData, h2.Extra)
 	}
-	if h.BlockScore.Cmp(h2.BlockScore) != 0 {
-		return fmt.Errorf("BlockScore: want: %v have: %v", h.BlockScore, h2.BlockScore)
-	}
 	if h.GasUsed != h2.GasUsed {
 		return fmt.Errorf("GasUsed: want: %d have: %d", h.GasUsed, h2.GasUsed)
 	}
-	if h.Timestamp.Cmp(h2.Time) != 0 {
-		return fmt.Errorf("Timestamp: want: %v have: %v", h.Timestamp, h2.Time)
+	if h.Timestamp != h2.Time.Uint64() {
+		return fmt.Errorf("TimestampGa: want: %v have: %v", h.Timestamp, h2.Time)
 	}
 	return nil
 }
