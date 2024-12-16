@@ -143,7 +143,7 @@ func (t *BlockTest) Run() error {
 	}
 	defer chain.Stop()
 
-	validBlocks, err := t.insertBlocks(chain)
+	validBlocks, err := t.insertBlocks(chain, gblock)
 	if err != nil {
 		return err
 	}
@@ -164,11 +164,11 @@ func (t *BlockTest) Run() error {
 func (t *BlockTest) genesis(config *params.ChainConfig) *blockchain.Genesis {
 	return &blockchain.Genesis{
 		Config:     config,
-		Timestamp:  t.json.Genesis.Timestamp.Uint64(),
+		Timestamp:  t.json.Genesis.Timestamp,
 		ParentHash: t.json.Genesis.ParentHash,
 		ExtraData:  t.json.Genesis.ExtraData,
 		GasUsed:    t.json.Genesis.GasUsed,
-		BlockScore: t.json.Genesis.BlockScore,
+		BlockScore: t.json.Genesis.Number,
 		Alloc:      t.json.Pre,
 	}
 }
@@ -186,11 +186,13 @@ See https://github.com/ethereum/tests/wiki/Blockchain-Tests-II
 	expected we are expected to ignore it and continue processing and then validate the
 	post state.
 */
-func (t *BlockTest) insertBlocks(blockchain *blockchain.BlockChain) ([]btBlock, error) {
+func (t *BlockTest) insertBlocks(blockchain *blockchain.BlockChain, preBlock *types.Block) ([]btBlock, error) {
 	validBlocks := make([]btBlock, 0)
+	latestParentHash := preBlock.Hash()
+	latestRoot := preBlock.Root()
 	// insert the test blocks, which will execute all transactions
 	for _, b := range t.json.Blocks {
-		cb, err := b.decode()
+		cb, err := b.decode(latestParentHash, latestRoot)
 		if err != nil {
 			if b.BlockHeader == nil {
 				continue // OK - block is supposed to be invalid, continue with next block
@@ -199,6 +201,8 @@ func (t *BlockTest) insertBlocks(blockchain *blockchain.BlockChain) ([]btBlock, 
 			}
 		}
 		// RLP decoding worked, try to insert into chain:
+		latestParentHash = cb.Hash()
+		latestRoot = cb.Root()
 		blocks := types.Blocks{cb}
 		i, err := blockchain.InsertChain(blocks)
 		if err != nil {
@@ -291,12 +295,166 @@ func (t *BlockTest) validateImportedHeaders(cm *blockchain.BlockChain, validBloc
 	return nil
 }
 
-func (bb *btBlock) decode() (*types.Block, error) {
+// func (bb *btBlock) decode() (*types.Block, error) {
+// 	data, err := hexutil.Decode(bb.Rlp)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	var b types.Block
+// 	err = rlp.DecodeBytes(data, &b)
+// 	return &b, err
+// }
+
+type TestHeader struct {
+	ParentHash       common.Hash
+	UncleHash        common.Hash
+	Coinbase         []byte
+	Root             common.Hash
+	TxHash           common.Hash
+	ReceiptHash      common.Hash
+	Bloom            types.Bloom
+	Difficulty       *big.Int
+	Number           *big.Int
+	GasLimit         uint64
+	GasUsed          uint64
+	Time             *big.Int
+	Extra            []byte
+	MixHash          common.Hash
+	Nonce            []byte
+	BaseFee          *big.Int     `rlp:"optional"`
+	WithdrawalsHash  *common.Hash `rlp:"optional"`
+	BlobGasUsed      *uint64      `rlp:"optional"`
+	ExcessBlobGas    *uint64      `rlp:"optional"`
+	ParentBeaconRoot *common.Hash `rlp:"optional"`
+	RequestsHash     *common.Hash `rlp:"optional"`
+}
+
+// Modify the decode function
+func (bb *btBlock) decode(latestParentHash common.Hash, latestRoot common.Hash) (*types.Block, error) {
 	data, err := hexutil.Decode(bb.Rlp)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode hex: %v", err)
 	}
-	var b types.Block
-	err = rlp.DecodeBytes(data, &b)
-	return &b, err
+
+	fmt.Printf("Debug: Full RLP hex: %x\n", data)
+
+	// First decode just the raw RLP list
+	s := rlp.NewStream(bytes.NewReader(data), 0)
+	kind, size, err := s.Kind()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get RLP kind: %v", err)
+	}
+	fmt.Printf("Debug: RLP kind: %v, size: %d\n", kind, size)
+
+	if kind != rlp.List {
+		return nil, fmt.Errorf("expected RLP list, got %v", kind)
+	}
+
+	// Manual decoding approach
+	if _, err := s.List(); err != nil {
+		return nil, fmt.Errorf("failed to enter outer list: %v", err)
+	}
+
+	// Decode header
+	var header TestHeader
+	if err := s.Decode(&header); err != nil {
+		return nil, fmt.Errorf("failed to decode header: %v", err)
+	}
+
+	// Decode transactions
+	var txs []*types.Transaction
+	if err := s.Decode(&txs); err != nil {
+		return nil, fmt.Errorf("failed to decode transactions: %v", err)
+	}
+
+	// Convert header
+	var rewardbase common.Address
+	if len(header.Coinbase) > 0 {
+		copy(rewardbase[:], header.Coinbase[:20])
+	}
+
+	block := types.NewBlockWithHeader(&types.Header{
+		ParentHash:   latestParentHash,
+		Rewardbase:   rewardbase,
+		Root:         latestRoot,
+		TxHash:       header.TxHash,
+		ReceiptHash:  header.ReceiptHash,
+		Bloom:        header.Bloom,
+		BlockScore:   params.GenesisBlockScore,
+		Number:       header.Number,
+		GasUsed:      header.GasUsed,
+		Time:         header.Time,
+		TimeFoS:      0,
+		Extra:        header.Extra,
+		Governance:   []byte{},
+		Vote:         []byte{},
+		BaseFee:      header.BaseFee,
+		RandomReveal: []byte{},
+		MixHash:      header.MixHash[:],
+	})
+
+	return block.WithBody(txs), nil
 }
+
+// func useEthBlockHash(r params.Rules, json *btJSON) common.Hash {
+// 	// https://github.com/ethereum/go-ethereum/blob/v1.14.11/tests/state_test_util.go#L241-L249
+// 	type ethHeader struct {
+// 		ParentHash  common.Hash    `json:"parentHash"       gencodec:"required"`
+// 		UncleHash   common.Hash    `json:"sha3Uncles"       gencodec:"required"`
+// 		Coinbase    common.Address `json:"miner"`
+// 		Root        common.Hash    `json:"stateRoot"        gencodec:"required"`
+// 		TxHash      common.Hash    `json:"transactionsRoot" gencodec:"required"`
+// 		ReceiptHash common.Hash    `json:"receiptsRoot"     gencodec:"required"`
+// 		Bloom       types.Bloom    `json:"logsBloom"        gencodec:"required"`
+// 		Difficulty  *big.Int       `json:"difficulty"       gencodec:"required"`
+// 		Number      *big.Int       `json:"number"           gencodec:"required"`
+// 		GasLimit    uint64         `json:"gasLimit"         gencodec:"required"`
+// 		GasUsed     uint64         `json:"gasUsed"          gencodec:"required"`
+// 		Time        uint64         `json:"timestamp"        gencodec:"required"`
+// 		Extra       []byte         `json:"extraData"        gencodec:"required"`
+// 		MixDigest   common.Hash    `json:"mixHash"`
+// 		Nonce       uint64         `json:"nonce"`
+
+// 		// BaseFee was added by EIP-1559 and is ignored in legacy headers.
+// 		BaseFee *big.Int `json:"baseFeePerGas" rlp:"optional"`
+
+// 		// WithdrawalsHash was added by EIP-4895 and is ignored in legacy headers.
+// 		WithdrawalsHash *common.Hash `json:"withdrawalsRoot" rlp:"optional"`
+
+// 		// BlobGasUsed was added by EIP-4844 and is ignored in legacy headers.
+// 		BlobGasUsed *uint64 `json:"blobGasUsed" rlp:"optional"`
+
+// 		// ExcessBlobGas was added by EIP-4844 and is ignored in legacy headers.
+// 		ExcessBlobGas *uint64 `json:"excessBlobGas" rlp:"optional"`
+
+// 		// ParentBeaconRoot was added by EIP-4788 and is ignored in legacy headers.
+// 		ParentBeaconRoot *common.Hash `json:"parentBeaconBlockRoot" rlp:"optional"`
+
+// 		// RequestsHash was added by EIP-7685 and is ignored in legacy headers.
+// 		RequestsHash *common.Hash `json:"requestsRoot" rlp:"optional"`
+// 	}
+
+// 	header := ethHeader{
+// 		ParentHash:       json.Genesis.ParentHash,
+// 		UncleHash:        json.Genesis.UncleHash,
+// 		Coinbase:         json.Genesis.Coinbase,
+// 		Root:             json.Genesis.StateRoot,
+// 		TxHash:           json.Genesis.Hash,
+// 		ReceiptHash:      json.Genesis.ReceiptTrie,
+// 		Bloom:            json.Genesis.Bloom,
+// 		Difficulty:       json.Genesis.Difficulty,
+// 		Number:           json.Genesis.Number,
+// 		GasLimit:         json.Genesis.GasLimit,
+// 		GasUsed:          json.Genesis.GasUsed,
+// 		Time:             json.Genesis.Timestamp,
+// 		Extra:            json.Genesis.ExtraData,
+// 		MixDigest:        json.Genesis.MixHash,
+// 		Nonce:            json.Genesis.Nonce,
+// 		BaseFee:          json.Genesis.BaseFeePerGas,
+// 		WithdrawalsHash:  json.Genesis.WithdrawalsRoot,
+// 		BlobGasUsed:      json.Genesis.BlobGasUsed,
+// 		ExcessBlobGas:    json.Genesis.ExcessBlobGas,
+// 		ParentBeaconRoot: json.Genesis.ParentBeaconBlockRoot,
+// 	}
+// 	return header.Hash()
+// }
