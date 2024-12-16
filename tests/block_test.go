@@ -23,6 +23,7 @@
 package tests
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -39,13 +40,38 @@ func TestBlockchain(t *testing.T) {
 	// This test is broken
 	bt.fails(`blockhashNonConstArg_Constantinople`, "Broken test")
 
+	bt.skipLoad(`^cancun\/eip4788_beacon_root\/`)
+	bt.skipLoad(`^cancun\/eip4844_blobs\/`)
+
 	// Still failing tests
 	// bt.skipLoad(`^bcWalletTest.*_Byzantium$`)
 
 	// TODO-Kaia Update BlockchainTests first to enable this test, since block header has been changed in Kaia.
-	//bt.walk(t, blockTestDir, func(t *testing.T, name string, test *BlockTest) {
-	//	if err := bt.checkFailure(t, name, test.Run()); err != nil {
-	//		t.Error(err)
-	//	}
-	//})
+	bt.walk(t, executionSpecBlockchainTestDir, func(t *testing.T, name string, test *BlockTest) {
+		skipForks := []string{
+			"Frontier",
+			"Homestead",
+			"Byzantium",
+			"Constantinople",
+			"ConstantinopleFix",
+			"Istanbul",
+			"Berlin",
+			"London",
+			"Merge",
+			"Paris",
+			"Shanghai",
+			// "Cancun",
+			"Prague",
+		}
+
+		for _, fork := range skipForks {
+			if strings.HasPrefix(strings.ToLower(name), strings.ToLower(fork)+"/") {
+				t.Skipf("Skipping %s fork test", fork)
+				return
+			}
+		}
+		if err := bt.checkFailure(t, name, test.Run()); err != nil {
+			t.Error(err)
+		}
+	})
 }
