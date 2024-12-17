@@ -56,6 +56,9 @@ var Forks = map[string]*params.ChainConfig{
 	"London": {
 		ChainID: big.NewInt(1),
 	},
+	"Paris": {
+		ChainID: big.NewInt(1),
+	},
 	"Merge": {
 		ChainID: big.NewInt(1),
 	},
@@ -81,6 +84,9 @@ var Forks = map[string]*params.ChainConfig{
 		RandaoCompatibleBlock:    new(big.Int),
 		KaiaCompatibleBlock:      new(big.Int),
 		Kip160CompatibleBlock:    new(big.Int),
+	},
+	"ShanghaiToCancunAtTime15k": {
+		ChainID: big.NewInt(1),
 	},
 	"Prague": {
 		ChainID:                  big.NewInt(1),
