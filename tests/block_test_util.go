@@ -396,6 +396,50 @@ func (bb *btBlock) decode(latestParentHash common.Hash, latestRoot common.Hash) 
 	return block.WithBody(txs), nil
 }
 
+// Modify the decode function
+func (bb *btBlock) decodeTx() (types.Transactions, common.Address, error) {
+	data, err := hexutil.Decode(bb.Rlp)
+	if err != nil {
+		return nil, common.Address{}, fmt.Errorf("failed to decode hex: %v", err)
+	}
+
+	// First decode just the raw RLP list
+	s := rlp.NewStream(bytes.NewReader(data), 0)
+	kind, _, err := s.Kind()
+	if err != nil {
+		return nil, common.Address{}, fmt.Errorf("failed to get RLP kind: %v", err)
+	}
+
+	if kind != rlp.List {
+		return nil, common.Address{}, fmt.Errorf("expected RLP list, got %v", kind)
+	}
+
+	// Manual decoding approach
+	if _, err := s.List(); err != nil {
+		return nil, common.Address{}, fmt.Errorf("failed to enter outer list: %v", err)
+	}
+
+	// Decode header
+	var header TestHeader
+	if err := s.Decode(&header); err != nil {
+		return nil, common.Address{}, fmt.Errorf("failed to decode header: %v", err)
+	}
+
+	// Decode transactions
+	var txs types.Transactions
+	if err := s.Decode(&txs); err != nil {
+		return nil, common.Address{}, fmt.Errorf("failed to decode transactions: %v", err)
+	}
+
+	// Convert header
+	var rewardbase common.Address
+	if len(header.Coinbase) > 0 {
+		copy(rewardbase[:], header.Coinbase[:20])
+	}
+
+	return txs, rewardbase, nil
+}
+
 // func useEthBlockHash(r params.Rules, json *btJSON) common.Hash {
 // 	// https://github.com/ethereum/go-ethereum/blob/v1.14.11/tests/state_test_util.go#L241-L249
 // 	type ethHeader struct {
