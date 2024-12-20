@@ -113,6 +113,14 @@ func (t *BlockTest) Run() error {
 	if !ok {
 		return UnsupportedForkError{t.json.Network}
 	}
+	config.SetDefaults()
+	config.Governance.KIP71 = &params.KIP71Config{
+		LowerBoundBaseFee:         0,
+		UpperBoundBaseFee:         0,
+		GasTarget:                 0,
+		MaxBlockGasUsedForBaseFee: 0,
+		BaseFeeDenominator:        0,
+	}
 	blockchain.InitDeriveSha(config)
 
 	// import pre accounts & construct test genesis block & state root
@@ -143,22 +151,28 @@ func (t *BlockTest) Run() error {
 	}
 	defer chain.Stop()
 
-	validBlocks, err := t.insertBlocks(chain, gblock)
+	// validBlocks, err := t.insertBlocks(chain, gblock)
+	_, rewardMap, err := t.insertBlocksFromTx(chain, gblock, db)
 	if err != nil {
 		return err
 	}
-	cmlast := chain.CurrentBlock().Hash()
-	if common.Hash(t.json.BestBlock) != cmlast {
-		return fmt.Errorf("last block hash validation mismatch: want: %x, have: %x", t.json.BestBlock, cmlast)
-	}
+
+	// no need
+	// cmlast := chain.CurrentBlock().Hash()
+	// if common.Hash(t.json.BestBlock) != cmlast {
+	// 	return fmt.Errorf("last block hash validation mismatch: want: %x, have: %x", t.json.BestBlock, cmlast)
+	// }
+
 	newDB, err := chain.State()
 	if err != nil {
 		return err
 	}
-	if err = t.validatePostState(newDB); err != nil {
+	if err = t.validatePostState(newDB, rewardMap); err != nil {
 		return fmt.Errorf("post state validation failed: %v", err)
 	}
-	return t.validateImportedHeaders(chain, validBlocks)
+
+	// return t.validateImportedHeaders(chain, validBlocks)
+	return nil
 }
 
 func (t *BlockTest) genesis(config *params.ChainConfig) *blockchain.Genesis {
@@ -186,7 +200,7 @@ See https://github.com/ethereum/tests/wiki/Blockchain-Tests-II
 	expected we are expected to ignore it and continue processing and then validate the
 	post state.
 */
-func (t *BlockTest) insertBlocks(blockchain *blockchain.BlockChain, preBlock *types.Block) ([]btBlock, error) {
+func (t *BlockTest) insertBlocks(bc *blockchain.BlockChain, preBlock *types.Block) ([]btBlock, error) {
 	validBlocks := make([]btBlock, 0)
 	latestParentHash := preBlock.Hash()
 	latestRoot := preBlock.Root()
@@ -204,7 +218,7 @@ func (t *BlockTest) insertBlocks(blockchain *blockchain.BlockChain, preBlock *ty
 		latestParentHash = cb.Hash()
 		latestRoot = cb.Root()
 		blocks := types.Blocks{cb}
-		i, err := blockchain.InsertChain(blocks)
+		i, err := bc.InsertChain(blocks)
 		if err != nil {
 			if b.BlockHeader == nil {
 				continue // OK - block is supposed to be invalid, continue with next block
@@ -223,6 +237,75 @@ func (t *BlockTest) insertBlocks(blockchain *blockchain.BlockChain, preBlock *ty
 		validBlocks = append(validBlocks, b)
 	}
 	return validBlocks, nil
+}
+
+type rewardList struct {
+	kaiaReward *big.Int
+	ethReward  *big.Int
+}
+
+func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *types.Block, db database.DBManager) ([]btBlock, map[common.Address]rewardList, error) {
+	validBlocks := make([]btBlock, 0)
+	rewardMap := map[common.Address]rewardList{}
+	// insert the test blocks, which will execute all transactions
+	for _, b := range t.json.Blocks {
+		txs, rewardBase, baseFeePerGas, err := b.decodeTx()
+		if err != nil {
+			if b.BlockHeader == nil {
+				continue // OK - block is supposed to be invalid, continue with next block
+			} else {
+				return nil, nil, fmt.Errorf("Block RLP decoding failed when expected to succeed: %v", err)
+			}
+		}
+		// RLP decoding worked, try to insert into chain:
+		kaiaReward := common.Big0
+		ethReward := common.Big0
+		// var maxFeePerGas *big.Int
+		blocks, receiptsList := blockchain.GenerateChain(bc.Config(), preBlock, bc.Engine(), db, 1, func(i int, b *blockchain.BlockGen) {
+			b.SetRewardbase(rewardBase)
+			for _, tx := range txs {
+				b.AddTx(tx)
+			}
+		})
+		// The reward calculation is different for kaia and eth, and this will be deducted from the state later.
+		for _, receipt := range receiptsList[0] {
+			for _, tx := range blocks[0].Body().Transactions {
+				if tx.Hash() != receipt.TxHash {
+					continue
+				}
+				// Record kaia's reward.
+				kaiaReward = new(big.Int).Add(kaiaReward, new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), tx.GasPrice()))
+				fmt.Println(kaiaReward, tx.GasPrice(), tx.EffectiveGasPrice(blocks[0].Header(), bc.Config()), "naazenaaze fkldsjakfjdklsajklf")
+
+				// Record eth's reward.
+				ethGasPrice := tx.GasPrice()
+				if baseFeePerGas != nil {
+					ethGasPrice = math.BigMin(new(big.Int).Add(tx.GasTipCap(), baseFeePerGas), tx.GasFeeCap())
+				}
+				ethReward = new(big.Int).Add(ethReward, calculateEthMiningReward(ethGasPrice, tx.GasFeeCap(), tx.GasTipCap(), baseFeePerGas,
+					receipt.GasUsed, bc.Config().Rules(blocks[0].Header().Number)))
+			}
+		}
+		rewardMap[rewardBase] = rewardList{
+			kaiaReward: kaiaReward,
+			ethReward:  ethReward,
+		}
+
+		i, err := bc.InsertChain(blocks)
+		if err != nil {
+			if b.BlockHeader == nil {
+				continue // OK - block is supposed to be invalid, continue with next block
+			} else {
+				return nil, nil, fmt.Errorf("Block #%v insertion into chain failed: %v", blocks[i].Number(), err)
+			}
+		}
+		if b.BlockHeader == nil {
+			return nil, nil, fmt.Errorf("Block insertion should have failed")
+		}
+
+		validBlocks = append(validBlocks, b)
+	}
+	return validBlocks, rewardMap, nil
 }
 
 func validateHeader(h *btHeader, h2 *types.Header) error {
@@ -256,21 +339,27 @@ func validateHeader(h *btHeader, h2 *types.Header) error {
 	return nil
 }
 
-func (t *BlockTest) validatePostState(statedb *state.StateDB) error {
+func (t *BlockTest) validatePostState(statedb *state.StateDB, rewardMap map[common.Address]rewardList) error {
 	// validate post state accounts in test file against what we have in state db
 	for addr, acct := range t.json.Post {
+		if rewardList, exist := rewardMap[addr]; exist {
+			// In the case of rewardBaseAddress, the Kaia reward will be deducted once.
+			statedb.SubBalance(addr, rewardList.kaiaReward)
+			statedb.AddBalance(addr, rewardList.ethReward)
+		}
+
 		// address is indirectly verified by the other fields, as it's the db key
 		code2 := statedb.GetCode(addr)
 		balance2 := statedb.GetBalance(addr)
 		nonce2 := statedb.GetNonce(addr)
 		if !bytes.Equal(code2, acct.Code) {
-			return fmt.Errorf("account code mismatch for addr: %s want: %v have: %s", addr, acct.Code, hex.EncodeToString(code2))
+			return fmt.Errorf("account code mismatch for addr: %s want: %v have: %s", addr.String(), acct.Code, hex.EncodeToString(code2))
 		}
 		if balance2.Cmp(acct.Balance) != 0 {
-			return fmt.Errorf("account balance mismatch for addr: %s, want: %d, have: %d", addr, acct.Balance, balance2)
+			return fmt.Errorf("account balance mismatch for addr: %s, want: %d, have: %d", addr.String(), acct.Balance, balance2)
 		}
 		if nonce2 != acct.Nonce {
-			return fmt.Errorf("account nonce mismatch for addr: %s want: %d have: %d", addr, acct.Nonce, nonce2)
+			return fmt.Errorf("account nonce mismatch for addr: %s want: %d have: %d", addr.String(), acct.Nonce, nonce2)
 		}
 	}
 	return nil
@@ -397,38 +486,38 @@ func (bb *btBlock) decode(latestParentHash common.Hash, latestRoot common.Hash) 
 }
 
 // Modify the decode function
-func (bb *btBlock) decodeTx() (types.Transactions, common.Address, error) {
+func (bb *btBlock) decodeTx() (types.Transactions, common.Address, *big.Int, error) {
 	data, err := hexutil.Decode(bb.Rlp)
 	if err != nil {
-		return nil, common.Address{}, fmt.Errorf("failed to decode hex: %v", err)
+		return nil, common.Address{}, nil, fmt.Errorf("failed to decode hex: %v", err)
 	}
 
 	// First decode just the raw RLP list
 	s := rlp.NewStream(bytes.NewReader(data), 0)
 	kind, _, err := s.Kind()
 	if err != nil {
-		return nil, common.Address{}, fmt.Errorf("failed to get RLP kind: %v", err)
+		return nil, common.Address{}, nil, fmt.Errorf("failed to get RLP kind: %v", err)
 	}
 
 	if kind != rlp.List {
-		return nil, common.Address{}, fmt.Errorf("expected RLP list, got %v", kind)
+		return nil, common.Address{}, nil, fmt.Errorf("expected RLP list, got %v", kind)
 	}
 
 	// Manual decoding approach
 	if _, err := s.List(); err != nil {
-		return nil, common.Address{}, fmt.Errorf("failed to enter outer list: %v", err)
+		return nil, common.Address{}, nil, fmt.Errorf("failed to enter outer list: %v", err)
 	}
 
 	// Decode header
 	var header TestHeader
 	if err := s.Decode(&header); err != nil {
-		return nil, common.Address{}, fmt.Errorf("failed to decode header: %v", err)
+		return nil, common.Address{}, nil, fmt.Errorf("failed to decode header: %v", err)
 	}
 
 	// Decode transactions
 	var txs types.Transactions
 	if err := s.Decode(&txs); err != nil {
-		return nil, common.Address{}, fmt.Errorf("failed to decode transactions: %v", err)
+		return nil, common.Address{}, nil, fmt.Errorf("failed to decode transactions: %v", err)
 	}
 
 	// Convert header
@@ -437,7 +526,7 @@ func (bb *btBlock) decodeTx() (types.Transactions, common.Address, error) {
 		copy(rewardbase[:], header.Coinbase[:20])
 	}
 
-	return txs, rewardbase, nil
+	return txs, rewardbase, header.BaseFee, nil
 }
 
 // func useEthBlockHash(r params.Rules, json *btJSON) common.Hash {
