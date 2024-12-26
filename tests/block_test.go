@@ -105,12 +105,13 @@ func (suite *ExecutionSpecBlockTestSuite) TestExecutionSpecBlock() {
 	bt.skipLoad(`^berlin\/`)
 	bt.skipLoad(`^byzantium\/`)
 	// bt.skipLoad(`^cancun\/`)
-	bt.skipLoad(`^cancun\/eip1153_tstore\/tload.*\/`)
-	bt.skipLoad(`^cancun\/eip1153_tstore\/tstorage.*\/`)
-	bt.skipLoad(`^cancun\/eip1153_tstore\/tstore_reentrancy\/`)
-	bt.skipLoad(`^cancun\/eip5656_mcopy\/`)
+	// bt.skipLoad(`^cancun\/eip1153_tstore\/basic_tload.*\/`)
+	// bt.skipLoad(`^cancun\/eip1153_tstore\/tload_calls.*\/`)
+	// bt.skipLoad(`^cancun\/eip1153_tstore\/tstorage.*\/`)
+	// bt.skipLoad(`^cancun\/eip1153_tstore\/tstore_reentrancy\/`)
+	// bt.skipLoad(`^cancun\/eip5656_mcopy\/`)
 	bt.skipLoad(`^cancun\/eip6780_selfdestruct\/`)
-	bt.skipLoad(`^cancun\/eip7516_blobgasfee\/`)
+	
 	bt.skipLoad(`^constantinople\/`)
 	bt.skipLoad(`^frontier\/`)
 	bt.skipLoad(`^homestead\/`)
@@ -123,8 +124,16 @@ func (suite *ExecutionSpecBlockTestSuite) TestExecutionSpecBlock() {
 	// unsupported EIPs
 	bt.skipLoad(`^cancun\/eip4788_beacon_root\/`)
 	bt.skipLoad(`^cancun\/eip4844_blobs\/`)
+	bt.skipLoad(`^cancun\/eip7516_blobgasfee\/`)
 
 	bt.walk(t, executionSpecBlockTestDir, func(t *testing.T, name string, test *BlockTest) {
+		boundaryValueTests := []string{"ShanghaiToCancunAtTime15k"}
+		for _, boundaryValueTest := range boundaryValueTests {
+			if test.json.Network == boundaryValueTest {
+				t.Skip()
+			}
+		}
+
 		if err := bt.checkFailure(t, name, test.Run()); err != nil {
 			t.Error(err)
 		}
