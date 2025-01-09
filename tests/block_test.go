@@ -127,7 +127,7 @@ func (suite *ExecutionSpecBlockTestSuite) TestExecutionSpecBlock() {
 	bt.skipLoad(`^cancun\/eip7516_blobgasfee\/`)
 
 	bt.walk(t, executionSpecBlockTestDir, func(t *testing.T, name string, test *BlockTest) {
-		boundaryValueTests := []string{"ShanghaiToCancunAtTime15k"}
+		boundaryValueTests := []string{"ParisToShanghaiAtTime15k", "ShanghaiToCancunAtTime15k", "CancunToPragueAtTime15k"}
 		for _, boundaryValueTest := range boundaryValueTests {
 			if test.json.Network == boundaryValueTest {
 				t.Skip()

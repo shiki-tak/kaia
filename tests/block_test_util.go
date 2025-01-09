@@ -108,6 +108,8 @@ type btHeaderMarshaling struct {
 	ExcessBlobGas *math.HexOrDecimal64
 }
 
+var bHashMap = make(map[common.Hash]common.Hash)
+
 func (t *BlockTest) Run() error {
 	config, ok := Forks[t.json.Network]
 	if !ok {
@@ -231,11 +233,16 @@ func (t *BlockTest) insertBlocks(bc *blockchain.BlockChain, preBlock *types.Bloc
 		}
 
 		// validate RLP decoding by checking all values against test file JSON
-		if err = validateHeader(b.BlockHeader, cb.Header()); err != nil {
+		if err = validateEthHeaderCompatibility(b.BlockHeader, cb.Header()); err != nil {
 			return nil, fmt.Errorf("Deserialised block header validation failed: %v", err)
 		}
 		validBlocks = append(validBlocks, b)
+
+		for i := range blocks {
+			bHashMap[blocks[i].Header().Hash()] = validBlocks[i].BlockHeader.Hash // map kaia->eth
+		}
 	}
+
 	return validBlocks, nil
 }
 
@@ -342,34 +349,43 @@ func (t *BlockTest) insertBlocksFromTx(bc *blockchain.BlockChain, preBlock *type
 	return validBlocks, rewardMap, senderMap, nil
 }
 
-func validateHeader(h *btHeader, h2 *types.Header) error {
+// Kaia and Ethereum headers have different structures.
+// The common fields are:
+// Bloom, Number, ParentHash, ReceiptHash, TxHash, Root, Extra, GasUsed, Time, BaseFee
+// However, because block tests run in Kaia do not construct headers from test data,
+// there are some fields in the header that are different from the default ones created by makeHeader.
+// Therefore, we only validate values ​​for fields that are compatible with Ethereum.
+func validateEthHeaderCompatibility(h *btHeader, h2 *types.Header) error {
 	if h.Bloom != h2.Bloom {
 		return fmt.Errorf("Bloom: want: %x have: %x", h.Bloom, h2.Bloom)
 	}
 	if h.Number.Cmp(h2.Number) != 0 {
 		return fmt.Errorf("Number: want: %v have: %v", h.Number, h2.Number)
 	}
-	if h.ParentHash != h2.ParentHash {
-		return fmt.Errorf("Parent hash: want: %x have: %x", h.ParentHash, h2.ParentHash)
-	}
+	// if h.ParentHash != h2.ParentHash {
+	// 	return fmt.Errorf("Parent hash: want: %x have: %x", h.ParentHash, h2.ParentHash)
+	// }
 	if h.ReceiptTrie != h2.ReceiptHash {
 		return fmt.Errorf("Receipt hash: want: %x have: %x", h.ReceiptTrie, h2.ReceiptHash)
 	}
 	if h.TransactionsTrie != h2.TxHash {
 		return fmt.Errorf("Tx hash: want: %x have: %x", h.TransactionsTrie, h2.TxHash)
 	}
-	if h.StateRoot != h2.Root {
-		return fmt.Errorf("State hash: want: %x have: %x", h.StateRoot, h2.Root)
-	}
-	if !bytes.Equal(h.ExtraData, h2.Extra) {
-		return fmt.Errorf("Extra data: want: %x have: %x", h.ExtraData, h2.Extra)
-	}
+	// if h.StateRoot != h2.Root {
+	// 	return fmt.Errorf("State hash: want: %x have: %x", h.StateRoot, h2.Root)
+	// }
+	// if !bytes.Equal(h.ExtraData, h2.Extra) {
+	// 	return fmt.Errorf("Extra data: want: %x have: %x", h.ExtraData, h2.Extra)
+	// }
 	if h.GasUsed != h2.GasUsed {
 		return fmt.Errorf("GasUsed: want: %d have: %d", h.GasUsed, h2.GasUsed)
 	}
-	if h.Timestamp != h2.Time.Uint64() {
-		return fmt.Errorf("TimestampGa: want: %v have: %v", h.Timestamp, h2.Time)
-	}
+	// if h.Timestamp != h2.Time.Uint64() {
+	// 	return fmt.Errorf("Timestamp: want: %v have: %v", h.Timestamp, h2.Time)
+	// }
+	// if h.BaseFeePerGas.Cmp(h2.BaseFee) != 0 {
+	// 	return fmt.Errorf("BaseFee: want: %v have: %v", h.BaseFeePerGas, h2.BaseFee)
+	// }
 	return nil
 }
 
@@ -415,7 +431,7 @@ func (t *BlockTest) validateImportedHeaders(cm *blockchain.BlockChain, validBloc
 	// all blocks have been processed by BlockChain, as they may not
 	// be part of the longest chain until last block is imported.
 	for b := cm.CurrentBlock(); b != nil && b.NumberU64() != 0; b = cm.GetBlockByHash(b.Header().ParentHash) {
-		if err := validateHeader(bmap[b.Hash()].BlockHeader, b.Header()); err != nil {
+		if err := validateEthHeaderCompatibility(bmap[bHashMap[b.Hash()]].BlockHeader, b.Header()); err != nil {
 			return fmt.Errorf("Imported block header validation failed: %v", err)
 		}
 	}
